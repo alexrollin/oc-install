@@ -1,0 +1,355 @@
+#!/usr/bin/env bash
+# oc-install — single-command reproducible install for sst/opencode (Bebond wiring).
+#
+# Fresh Linux Mint / Ubuntu machine → ready in ~10 min.
+# Bundles: opencode binary, provider env files, opencode.json config,
+# 6 MCP servers, AGENTS.md, memory symlink, MemPalace + seed,
+# oc-real / oc-overnight / mp / mount-eed launchers, desktop shortcut.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/alexrollin/oc-install/main/oc-install | bash
+#   — or —
+#   bash oc-install
+#
+# Environment (required — script will prompt if missing):
+#   OPENROUTER_API_KEY   — OpenRouter provider key
+#   HF_TOKEN             — HuggingFace provider key (optional)
+#   NVIDIA_API_KEY       — NVIDIA provider key (optional)
+#   SK_BEAT_TOKEN        — StoryKeeper beat token (default: estate service token)
+#   BBDEV_TOKEN          — BB Dev sandbox token (default: Bewonersbond Lab key)
+#
+# Safe to re-run: idempotent, won't clobber existing files without --force.
+
+set -uo pipefail
+
+VERSION="1.0.0"
+FORCE="${OC_INSTALL_FORCE:-}"
+DRY_RUN="${OC_INSTALL_DRY_RUN:-}"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+ok()   { echo -e "${GREEN}✅ $*${NC}"; }
+warn() { echo -e "${YELLOW}⚠  $*${NC}"; }
+fail() { echo -e "${RED}❌ $*${NC}"; exit 1; }
+info() { echo -e "${CYAN}→  $*${NC}"; }
+
+# ── Paths ──────────────────────────────────────────────────────────
+OC_BIN_DIR="$HOME/.opencode/bin"
+OC_CONFIG="$HOME/.config/opencode"
+LOCAL_BIN="$HOME/.local/bin"
+DESKTOP_DIR="$HOME/.local/share/applications"
+MEMORY_DIR="$HOME/.config/opencode/memory"
+CLAUDE_MEMORY="$HOME/.claude/projects/-home-alexrollin/memory"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# ── Tokens (defaults — override via env) ───────────────────────────
+SK_TOKEN="${SK_BEAT_TOKEN:-bb_youClRMsvnGINKuZPY9Jh053DIeomErj}"
+BBDEV_TOKEN="${BBDEV_TOKEN:-bb_PxeqiAzEsbCOgc8KnylczE4JY6yvmVLE}"
+
+# ── Step helpers ───────────────────────────────────────────────────
+step_n=0
+step() {
+  step_n=$((step_n + 1))
+  echo ""
+  echo -e "${CYAN}═══ Step $step_n: $* ═══${NC}"
+}
+
+write_if_missing() {
+  local dest="$1" src="$2"
+  if [ -f "$dest" ] && [ -z "$FORCE" ]; then
+    warn "Exists (skipped, set OC_INSTALL_FORCE=1 to overwrite): $dest"
+    return 1
+  fi
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would copy: $src → $dest"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+  ok "Wrote: $dest"
+  return 0
+}
+
+write_string_if_missing() {
+  local dest="$1" content="$2"
+  if [ -f "$dest" ] && [ -z "$FORCE" ]; then
+    warn "Exists (skipped, set OC_INSTALL_FORCE=1 to overwrite): $dest"
+    return 1
+  fi
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would write: $dest ($(echo "$content" | wc -l) lines)"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  printf '%s\n' "$content" > "$dest"
+  ok "Wrote: $dest"
+  return 0
+}
+
+append_if_missing() {
+  local dest="$1" line="$2"
+  if [ -f "$dest" ] && grep -qF "$line" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would append to: $dest"
+    return 0
+  fi
+  echo "$line" >> "$dest"
+}
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 1: System prerequisites
+# ═══════════════════════════════════════════════════════════════════
+step "System prerequisites"
+
+for cmd in curl python3 git; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    info "Installing $cmd..."
+    [ -z "$DRY_RUN" ] && sudo apt-get install -y "$cmd" >/dev/null 2>&1
+  fi
+done
+ok "curl, python3, git available"
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 2: Install sst/opencode binary
+# ═══════════════════════════════════════════════════════════════════
+step "Install sst/opencode binary"
+
+mkdir -p "$OC_BIN_DIR"
+export PATH="$OC_BIN_DIR:$LOCAL_BIN:$PATH"
+
+if command -v opencode >/dev/null 2>&1; then
+  ok "opencode already installed: $(command -v opencode) ($(opencode --version 2>/dev/null | head -1))"
+else
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would run: curl -fsSL https://opencode.ai/install | bash"
+  else
+    info "Downloading sst/opencode..."
+    curl -fsSL https://opencode.ai/install | bash
+  fi
+  export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+  if command -v opencode >/dev/null 2>&1; then
+    ok "opencode installed: $(opencode --version 2>/dev/null | head -1)"
+  else
+    fail "opencode install failed — check https://opencode.ai"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 3: Provider API keys
+# ═══════════════════════════════════════════════════════════════════
+step "Provider API keys"
+
+prompt_key() {
+  local env_file="$1" var_name="$2" description="$3"
+  if [ -f "$env_file" ] && grep -q "$var_name" "$env_file" 2>/dev/null; then
+    ok "$var_name already in $env_file"
+    return 0
+  fi
+  local val="${!var_name:-}"
+  if [ -z "$val" ]; then
+    if [ -t 0 ]; then
+      read -rp "Enter $description (or press Enter to skip): " val
+    else
+      warn "$var_name not set and no terminal — skipping $env_file"
+      return 0
+    fi
+  fi
+  if [ -n "$val" ]; then
+    write_string_if_missing "$env_file" "export $var_name=$val"
+  fi
+}
+
+prompt_key "$HOME/.env.openrouter"  "OPENROUTER_API_KEY" "OpenRouter API key (required)"
+prompt_key "$HOME/.env.huggingface" "HF_TOKEN"           "HuggingFace token (optional)"
+prompt_key "$HOME/.env.nvidia"      "NVIDIA_API_KEY"     "NVIDIA API key (optional)"
+
+ok "Provider env files configured"
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 4: opencode.json config (6 MCPs, 3 providers, permissions)
+# ═══════════════════════════════════════════════════════════════════
+step "opencode.json config (6 MCPs + 3 providers)"
+
+mkdir -p "$OC_CONFIG"
+
+if [ -f "$OC_CONFIG/opencode.json" ] && [ -z "$FORCE" ]; then
+  warn "opencode.json exists (skipped — set OC_INSTALL_FORCE=1 to overwrite)"
+else
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would write opencode.json from template"
+  else
+    sed -e "s|SK_TOKEN|$SK_TOKEN|g" -e "s|BBDEV_TOKEN|$BBDEV_TOKEN|g" \
+      "$SCRIPT_DIR/templates/opencode.json" > "$OC_CONFIG/opencode.json"
+    ok "Wrote: $OC_CONFIG/opencode.json"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 5: AGENTS.md (work rules)
+# ═══════════════════════════════════════════════════════════════════
+step "AGENTS.md — work rules"
+
+if [ -f "$OC_CONFIG/AGENTS.md" ] && [ -z "$FORCE" ]; then
+  warn "AGENTS.md exists (skipped — set OC_INSTALL_FORCE=1 to overwrite)"
+else
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would write AGENTS.md"
+  else
+    if [ -f "$HOME/.claude/CLAUDE.md" ]; then
+      cp "$HOME/.claude/CLAUDE.md" "$OC_CONFIG/AGENTS.md"
+      ok "Copied existing CLAUDE.md → AGENTS.md"
+    elif [ -f "$HOME/Projects/CLAUDE.md" ]; then
+      cp "$HOME/Projects/CLAUDE.md" "$OC_CONFIG/AGENTS.md"
+      ok "Copied Projects/CLAUDE.md → AGENTS.md"
+    else
+      warn "No existing CLAUDE.md found — writing empty template"
+      write_string_if_missing "$OC_CONFIG/AGENTS.md" "# OpenCode Work Rules
+
+(Auto-generated by oc-install. Replace with your own rules.)"
+    fi
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 6: Memory symlink
+# ═══════════════════════════════════════════════════════════════════
+step "Memory symlink"
+
+mkdir -p "$CLAUDE_MEMORY"
+
+if [ -L "$MEMORY_DIR" ] && [ "$(readlink "$MEMORY_DIR")" = "$CLAUDE_MEMORY" ]; then
+  ok "Memory symlink already points to $CLAUDE_MEMORY"
+elif [ -d "$MEMORY_DIR" ] && [ ! -L "$MEMORY_DIR" ]; then
+  warn "Memory dir exists but is NOT a symlink — manual fix needed"
+  warn "  rm -rf $MEMORY_DIR && ln -s $CLAUDE_MEMORY $MEMORY_DIR"
+else
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would symlink: $MEMORY_DIR → $CLAUDE_MEMORY"
+  else
+    ln -s "$CLAUDE_MEMORY" "$MEMORY_DIR"
+    ok "Symlinked: $MEMORY_DIR → $CLAUDE_MEMORY"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 7: MemPalace install + seed
+# ═══════════════════════════════════════════════════════════════════
+step "MemPalace install + seed"
+
+if command -v mempalace >/dev/null 2>&1; then
+  ok "mempalace already installed: $(mempalace --version 2>/dev/null | head -1 || echo 'version unknown')"
+else
+  if [ -n "$DRY_RUN" ]; then
+    info "[dry-run] Would run: pip install mempalace"
+  else
+    info "Installing mempalace..."
+    pip3 install --user mempalace 2>/dev/null || pip install --user mempalace 2>/dev/null
+    if command -v mempalace >/dev/null 2>&1; then
+      ok "mempalace installed"
+    else
+      warn "mempalace install failed — install manually: pip install mempalace"
+    fi
+  fi
+fi
+
+if [ -n "$DRY_RUN" ]; then
+  info "[dry-run] Would run: mempalace wake-up (seed check)"
+elif command -v mempalace >/dev/null 2>&1; then
+  mempalace wake-up >/dev/null 2>&1
+  RC=$?
+  if [ $RC -eq 0 ]; then
+    ok "MemPalace seeded and responsive"
+  else
+    warn "MemPalace wake-up returned rc=$RC — may need manual init"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 8: Launcher scripts (from templates/)
+# ═══════════════════════════════════════════════════════════════════
+step "Launcher scripts"
+
+mkdir -p "$LOCAL_BIN"
+
+for script in oc-real oc-overnight mp mount-eed; do
+  src="$SCRIPT_DIR/templates/$script"
+  dest="$LOCAL_BIN/$script"
+  if [ -f "$src" ]; then
+    write_if_missing "$dest" "$src"
+    [ -f "$dest" ] && chmod +x "$dest"
+  else
+    warn "Template not found: $src (skipping $script)"
+  fi
+done
+
+ok "Launcher scripts installed"
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 9: Desktop launcher
+# ═══════════════════════════════════════════════════════════════════
+step "Desktop launcher"
+
+mkdir -p "$DESKTOP_DIR" "$HOME/Desktop"
+
+DESKTOP_SRC="$SCRIPT_DIR/templates/OpenCode.desktop"
+if [ -f "$DESKTOP_SRC" ]; then
+  sed "s|LOCAL_BIN|$LOCAL_BIN|g" "$DESKTOP_SRC" > /tmp/oc-desktop-$$
+  write_if_missing "$DESKTOP_DIR/OpenCode.desktop" /tmp/oc-desktop-$$
+  write_if_missing "$HOME/Desktop/OpenCode.desktop" /tmp/oc-desktop-$$
+  rm -f /tmp/oc-desktop-$$
+  chmod +x "$DESKTOP_DIR/OpenCode.desktop" 2>/dev/null
+  chmod +x "$HOME/Desktop/OpenCode.desktop" 2>/dev/null
+fi
+
+ok "Desktop launcher installed"
+
+# ═══════════════════════════════════════════════════════════════════
+# STEP 10: PATH persistence
+# ═══════════════════════════════════════════════════════════════════
+step "PATH persistence"
+
+SHELL_RC="$HOME/.bashrc"
+if [ -f "$HOME/.zshrc" ] && [ -n "${ZSH_VERSION:-}" ]; then
+  SHELL_RC="$HOME/.zshrc"
+fi
+
+append_if_missing "$SHELL_RC" 'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"'
+append_if_missing "$SHELL_RC" '[ -f "$HOME/.env.openrouter" ]  && . "$HOME/.env.openrouter"'
+append_if_missing "$SHELL_RC" '[ -f "$HOME/.env.huggingface" ] && . "$HOME/.env.huggingface"'
+append_if_missing "$SHELL_RC" '[ -f "$HOME/.env.nvidia" ]      && . "$HOME/.env.nvidia"'
+
+ok "Shell RC updated: $SHELL_RC"
+
+# ═══════════════════════════════════════════════════════════════════
+# DONE
+# ═══════════════════════════════════════════════════════════════════
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo -e " ${GREEN}oc-install v${VERSION} complete!${NC}"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
+echo " Installed:"
+echo "   opencode binary     → $OC_BIN_DIR/opencode"
+echo "   config              → $OC_CONFIG/opencode.json"
+echo "   work rules          → $OC_CONFIG/AGENTS.md"
+echo "   memory              → $MEMORY_DIR → $CLAUDE_MEMORY"
+echo "   mempalace           → $(command -v mempalace 2>/dev/null || echo 'pip install mempalace')"
+echo "   oc-real             → $LOCAL_BIN/oc-real"
+echo "   oc-overnight        → $LOCAL_BIN/oc-overnight"
+echo "   mp                  → $LOCAL_BIN/mp"
+echo "   mount-eed           → $LOCAL_BIN/mount-eed"
+echo "   desktop launcher    → $DESKTOP_DIR/OpenCode.desktop"
+echo ""
+echo " Launch:"
+echo "   oc-real                    # TUI with GLM-5.1 on OpenRouter"
+echo "   OC_PROVIDER=huggingface oc-real  # alternative provider"
+echo "   oc-overnight BEB-XXX ...   # autonomous ticket queue"
+echo ""
+echo " Open a NEW terminal (or: source ~/.bashrc) for PATH to take effect."
+echo "═══════════════════════════════════════════════════════════════"

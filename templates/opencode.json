@@ -1,0 +1,89 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "openrouter/z-ai/glm-5.1",
+  "small_model": "openrouter/z-ai/glm-4.7-flash",
+  "autoupdate": true,
+  "snapshot": true,
+  "instructions": [
+    "~/.config/opencode/AGENTS.md",
+    "~/.config/opencode/_session_brief.md"
+  ],
+  "provider": {
+    "openrouter": {
+      "options": {
+        "apiKey": "{env:OPENROUTER_API_KEY}",
+        "baseURL": "https://openrouter.ai/api/v1"
+      }
+    },
+    "huggingface": {
+      "options": {
+        "apiKey": "{env:HF_TOKEN}",
+        "baseURL": "https://router.huggingface.co/v1"
+      }
+    },
+    "nvidia": {
+      "options": {
+        "apiKey": "{env:NVIDIA_API_KEY}",
+        "baseURL": "https://integrate.api.nvidia.com/v1"
+      }
+    }
+  },
+  "permission": {
+    "*": "allow",
+    "bash": "allow",
+    "write": "allow",
+    "read": "allow",
+    "edit": "allow",
+    "webfetch": "allow"
+  },
+  "mcp": {
+    "bbtracker": {
+      "type": "remote",
+      "url": "https://mcp.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer SK_TOKEN"
+      }
+    },
+    "aio": {
+      "type": "remote",
+      "url": "https://mcp.bebond.net/aio/mcp",
+      "enabled": true,
+      "headers": {
+        "X-API-Key": "SK_TOKEN"
+      }
+    },
+    "sk": {
+      "type": "remote",
+      "url": "https://sk-mcp.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer SK_TOKEN"
+      }
+    },
+    "bbdev": {
+      "type": "remote",
+      "url": "https://dev.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer BBDEV_TOKEN"
+      }
+    },
+    "bbdocs": {
+      "type": "remote",
+      "url": "https://doc.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer SK_TOKEN"
+      }
+    },
+    "inkoop": {
+      "type": "remote",
+      "url": "https://inkoop.alex-rollin.workers.dev/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer SK_TOKEN"
+      }
+    }
+  }
+}

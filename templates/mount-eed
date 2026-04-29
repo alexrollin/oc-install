@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# mount-eed — mount the gocryptfs eed vault using the passphrase from the X clipboard.
+# Put your passphrase in the clipboard first (Ctrl-C in your password manager),
+# then run: mount-eed
+#
+# After mount: ~/vaults/eed/ is readable. Unmount with: fusermount -u ~/vaults/eed
+
+set -uo pipefail
+
+if mountpoint -q "$HOME/vaults/eed"; then
+  echo "✅ already mounted: ~/vaults/eed"
+  exit 0
+fi
+
+if ! command -v xclip >/dev/null 2>&1; then
+  echo "❌ xclip not installed"
+  exit 1
+fi
+
+if ! command -v gocryptfs >/dev/null 2>&1; then
+  echo "❌ gocryptfs not installed"
+  exit 1
+fi
+
+if [ -z "$(xclip -selection clipboard -o 2>/dev/null)" ]; then
+  echo "❌ clipboard is empty — copy your eed passphrase first, then re-run mount-eed"
+  exit 1
+fi
+
+# gocryptfs requires the mountpoint to be empty. If Obsidian wrote a stub
+# .obsidian/ into the unmounted dir, move it aside to a timestamped stash so
+# the real encrypted .obsidian/ can surface when the vault mounts.
+# NEVER delete — only stash.
+if [ -n "$(ls -A "$HOME/vaults/eed" 2>/dev/null)" ]; then
+  STASH="$HOME/.eed-mountpoint-stash-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$STASH"
+  echo "⚠ ~/vaults/eed not empty; stashing contents to: $STASH"
+  shopt -s dotglob
+  mv "$HOME/vaults/eed/"* "$STASH/" 2>/dev/null || true
+  shopt -u dotglob
+  if [ -n "$(ls -A "$HOME/vaults/eed" 2>/dev/null)" ]; then
+    echo "❌ could not empty ~/vaults/eed — manual fix needed"
+    echo "   remaining: $(ls -A "$HOME/vaults/eed")"
+    exit 1
+  fi
+fi
+
+gocryptfs -extpass 'xclip -selection clipboard -o' "$HOME/vaults-cipher/eed" "$HOME/vaults/eed"
+RC=$?
+if [ $RC -eq 0 ] && mountpoint -q "$HOME/vaults/eed"; then
+  echo "✅ mounted: ~/vaults/eed"
+  ls "$HOME/vaults/eed" | head -10
+else
+  echo "❌ mount failed (rc=$RC) — check passphrase"
+  exit $RC
+fi

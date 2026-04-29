@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# oc-overnight — run a queue of BBT tickets through OpenCode autonomously.
+# Each ticket is one `opencode run` invocation with a tight prompt instructing
+# the agent to fetch the ticket, do the work, post a done-proof BBT comment,
+# write SK beats every step, and stop. Then the next ticket runs.
+#
+# Usage:
+#   oc-overnight BEB-674 BEB-675 BEB-671 ...
+#   oc-overnight $(cat ~/queue.txt)        # tickets one per line
+#   OC_MODEL=openrouter/z-ai/glm-5.1 oc-overnight BEB-674
+#
+# Logs to ~/.opencode-overnight/<timestamp>/ — one file per ticket.
+# Heartbeat written via SK MCP every step automatically.
+
+set -uo pipefail
+export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"
+
+if [ $# -eq 0 ]; then
+  echo "Usage: oc-overnight BEB-XXX [BEB-YYY ...]"
+  exit 1
+fi
+
+if ! command -v opencode >/dev/null 2>&1; then
+  echo "❌ opencode not installed — run: oc-real-install"
+  exit 1
+fi
+
+set -a
+[ -f "$HOME/.env.openrouter" ]  && . "$HOME/.env.openrouter"
+[ -f "$HOME/.env.huggingface" ] && . "$HOME/.env.huggingface"
+[ -f "$HOME/.env.nvidia" ]      && . "$HOME/.env.nvidia"
+set +a
+
+MODEL="${OC_MODEL:-openrouter/z-ai/glm-5.1}"
+RUN_ID="$(date +%Y%m%d-%H%M%S)"
+LOG_DIR="$HOME/.opencode-overnight/$RUN_ID"
+mkdir -p "$LOG_DIR"
+
+echo "══════════════════════════════════════════════════════════════"
+echo "  oc-overnight  ·  ${MODEL}  ·  $# tickets  ·  $RUN_ID"
+echo "  Logs:  $LOG_DIR"
+echo "══════════════════════════════════════════════════════════════"
+echo
+
+# Session-start beat
+opencode run --model "$MODEL" "Use sk MCP beat_write with agent='oc-overnight', beat_type='session_start', content='oc-overnight $RUN_ID starting tickets: $*'. Reply OK." \
+  >"$LOG_DIR/_session_start.log" 2>&1 || true
+
+OVERALL_RC=0
+for TICKET in "$@"; do
+  STAMP=$(date +%H:%M:%S)
+  echo "[$STAMP] ▶ $TICKET"
+  TICKET_LOG="$LOG_DIR/$TICKET.log"
+
+  PROMPT=$(cat <<EOF
+Work ticket $TICKET autonomously. Steps:
+
+1. sk:beat_write agent='oc-overnight' beat_type='ticket_start' content='$TICKET starting'
+2. bbtracker:get_issue id='$TICKET' — read full description and dependencies
+3. sk:nutshell_get limit=30 — check for prior agent work on this
+4. Execute the ticket per its description and per the rules in ~/.config/opencode/AGENTS.md.
+   - Use bb-dev sandbox for code (write code in bb-dev, test in bb-dev).
+   - Branch + PR + squash-merge per feedback_github_workflow.
+   - Never push to main, never gh issue create, never Docker, never Anthropic API.
+   - Heartbeat (sk:beat_write) every meaningful step.
+5. When done, bbtracker:create_comment on $TICKET with proof: branch + PR URL + deploy URL + curl evidence.
+6. sk:beat_write agent='oc-overnight' beat_type='ticket_done' content='$TICKET done: <one-line summary>'
+7. If you cannot complete (blocker, missing repo, etc.), bbtracker:create_comment with diagnosis + sk:beat_write beat_type='blocked', then exit cleanly.
+
+Do NOT mark the ticket Done in BBT unless every acceptance criterion is met. Proof comment first, then status update.
+EOF
+  )
+
+  opencode run --model "$MODEL" "$PROMPT" >"$TICKET_LOG" 2>&1
+  RC=$?
+  if [ $RC -ne 0 ]; then
+    echo "[$(date +%H:%M:%S)] ✗ $TICKET exited rc=$RC (continuing)"
+    OVERALL_RC=1
+  else
+    echo "[$(date +%H:%M:%S)] ✓ $TICKET"
+  fi
+done
+
+# Session-end beat
+opencode run --model "$MODEL" "Use sk MCP beat_write with agent='oc-overnight', beat_type='session_end', content='oc-overnight $RUN_ID complete (rc=$OVERALL_RC)'. Reply OK." \
+  >"$LOG_DIR/_session_end.log" 2>&1 || true
+
+echo
+echo "══════════════════════════════════════════════════════════════"
+echo "  oc-overnight done (rc=$OVERALL_RC)  ·  $LOG_DIR"
+echo "══════════════════════════════════════════════════════════════"
+exit $OVERALL_RC

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mp — short alias for `mempalace search`. One-handed-friendly.
+# Usage:  mp "sove pricing video kapper"
+#         mp "BEB-628" --limit 5
+exec mempalace search "$@"

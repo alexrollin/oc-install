@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=OpenCode (Bebond)
+Comment=sst/opencode wired to Bebond — MemPalace + SK + 6 MCPs auto-loaded
+Exec=gnome-terminal --title="OpenCode" -- bash -lc "LOCAL_BIN/oc-real; echo; read -p 'Press Enter to close…'"
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;StartupNotify=true
