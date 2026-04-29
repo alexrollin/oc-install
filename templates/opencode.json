@@ -11,8 +11,8 @@
   "provider": {
     "openrouter": {
       "options": {
-        "apiKey": "{env:OPENROUTER_API_KEY}",
-        "baseURL": "https://openrouter.ai/api/v1"
+        "apiKey": "{env:BB_API_KEY}",
+        "baseURL": "https://gateway.bebond.net/v1"
       }
     },
     "huggingface": {
