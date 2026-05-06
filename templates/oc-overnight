@@ -59,10 +59,11 @@ Work ticket $TICKET autonomously. Steps:
 2. bbtracker:get_issue id='$TICKET' — read full description and dependencies
 3. sk:nutshell_get limit=30 — check for prior agent work on this
 4. Execute the ticket per its description and per the rules in ~/.config/opencode/AGENTS.md.
-   - Use bb-dev sandbox for code (write code in bb-dev, test in bb-dev).
-   - Branch + PR + squash-merge per feedback_github_workflow.
-   - Never push to main, never gh issue create, never Docker, never Anthropic API.
-   - Heartbeat (sk:beat_write) every meaningful step.
+- Use bb-dev sandbox for code (write code in bb-dev, test in bb-dev).
+- Branch + PR + squash-merge per feedback_github_workflow.
+- Never push to main, never gh issue create, never Docker, never Anthropic API.
+- Heartbeat (sk:beat_write) every meaningful step.
+- **Codemode hint:** if uncertain which MCP tool to call, use `search_tools` (e.g. aio_search_tools, bbdocs_search_tools) to discover tools, then `execute` to invoke by name.
 5. When done, bbtracker:create_comment on $TICKET with proof: branch + PR URL + deploy URL + curl evidence.
 6. sk:beat_write agent='oc-overnight' beat_type='ticket_done' content='$TICKET done: <one-line summary>'
 7. If you cannot complete (blocker, missing repo, etc.), bbtracker:create_comment with diagnosis + sk:beat_write beat_type='blocked', then exit cleanly.
