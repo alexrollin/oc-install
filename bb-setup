@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+# bb-setup v1 — Bebond OpenCode setup for Mac / Windows (Git Bash) / Linux
+#
+# One key configures: all 6 MCP servers + model gateway + permissions.
+# No secrets baked in. Safe to re-run.
+#
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/bebondnet/oc-install/main/bb-setup | bash
+#   BB_KEY=bb_xxx bash bb-setup
+#   bash bb-setup              # prompts for key
+
+set -uo pipefail
+
+VERSION="1.0.0"
+
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}✅ $*${NC}"; }
+warn() { echo -e "${YELLOW}⚠ $*${NC}"; }
+fail() { echo -e "${RED}❌ $*${NC}"; exit 1; }
+info() { echo -e "${CYAN}→ $*${NC}"; }
+
+detect_os() {
+  case "$(uname -s)" in
+    Darwin) echo "mac" ;;
+    MINGW*|MSYS*|CYGWIN*) echo "win" ;;
+    Linux*)  echo "linux" ;;
+    *)       echo "unknown" ;;
+  esac
+}
+
+OS=$(detect_os)
+info "Detected OS: $OS"
+
+OC_BIN_DIR="$HOME/.opencode/bin"
+OC_CONFIG="$HOME/.config/opencode"
+LOCAL_BIN="$HOME/.local/bin"
+
+step_n=0
+step() { step_n=$((step_n + 1)); echo ""; echo -e "${CYAN}═══ Step $step_n: $* ═══${NC}"; }
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 1: Install opencode binary
+# ═══════════════════════════════════════════════════════════════
+step "Install sst/opencode"
+
+mkdir -p "$OC_BIN_DIR" "$LOCAL_BIN"
+export PATH="$OC_BIN_DIR:$LOCAL_BIN:$PATH"
+
+if command -v opencode >/dev/null 2>&1; then
+  ok "opencode already installed: $(opencode --version 2>/dev/null | head -1)"
+else
+  case "$OS" in
+    mac)
+      ARCH=$(uname -m)
+      case "$ARCH" in
+        arm64) BINARY="opencode-darwin-arm64.zip" ;;
+        *)     BINARY="opencode-darwin-x64.zip" ;;
+      esac
+      ;;
+    win)
+      BINARY="opencode-windows-x64.zip"
+      ;;
+    linux)
+      BINARY=""  # use official installer
+      ;;
+    *)
+      BINARY=""
+      ;;
+  esac
+
+  if [ -n "$BINARY" ]; then
+    LATEST_URL=$(curl -sI "https://github.com/anomalyco/opencode/releases/latest" 2>&1 | grep -i "^location:" | tr -d '\r' | sed 's/location: //')
+    VERSION_TAG=$(basename "$LATEST_URL")
+    DL_URL="https://github.com/anomalyco/opencode/releases/download/${VERSION_TAG}/${BINARY}"
+    info "Downloading opencode ${VERSION_TAG} for $OS..."
+    TMPDIR=$(mktemp -d)
+    curl -fsSL "$DL_URL" -o "$TMPDIR/opencode.zip"
+    unzip -o "$TMPDIR/opencode.zip" -d "$TMPDIR/opencode-extracted" >/dev/null 2>&1
+    cp "$TMPDIR/opencode-extracted/opencode" "$OC_BIN_DIR/opencode" 2>/dev/null || \
+      cp "$TMPDIR/opencode-extracted/opencode.exe" "$OC_BIN_DIR/opencode.exe" 2>/dev/null || \
+      cp "$(find "$TMPDIR/opencode-extracted" -name 'opencode*' -type f | head -1)" "$OC_BIN_DIR/" 2>/dev/null
+    chmod +x "$OC_BIN_DIR"/opencode* 2>/dev/null
+    rm -rf "$TMPDIR"
+  else
+    info "Using official installer..."
+    curl -fsSL https://opencode.ai/install | bash
+  fi
+
+  if command -v opencode >/dev/null 2>&1; then
+    ok "opencode installed: $(opencode --version 2>/dev/null | head -1)"
+  else
+    fail "opencode install failed — download manually from https://github.com/anomalyco/opencode/releases"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 2: BB Key — prompt or env
+# ═══════════════════════════════════════════════════════════════
+step "BB Key (one key → all MCPs + gateway)"
+
+BB_KEY="${BB_KEY:-}"
+BB_KEY_FILE="$HOME/.config/opencode/bb_key"
+
+if [ -f "$BB_KEY_FILE" ]; then
+  BB_KEY="$(cat "$BB_KEY_FILE")"
+  ok "BB key loaded from $BB_KEY_FILE"
+elif [ -z "$BB_KEY" ]; then
+  echo ""
+  echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo -e "${BOLD} Paste your bb_key (from your team admin):${NC}"
+  echo ""
+  echo -e " Format: ${CYAN}bb_xxxxx...${NC}"
+  echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+  echo ""
+
+  if [ -t 0 ]; then
+    read -rp "Paste your bb_key: " BB_KEY
+    if [ -z "$BB_KEY" ]; then
+      warn "No bb_key entered — MCPs won't authenticate. Re-run to set."
+    fi
+  else
+    warn "No terminal and no BB_KEY env — set BB_KEY= and re-run."
+  fi
+fi
+
+if [ -n "$BB_KEY" ]; then
+  mkdir -p "$(dirname "$BB_KEY_FILE")"
+  printf '%s' "$BB_KEY" > "$BB_KEY_FILE"
+  chmod 600 "$BB_KEY_FILE"
+  ok "BB key saved to $BB_KEY_FILE"
+
+  if ! echo "$BB_KEY" | grep -qE '^bb_[a-zA-Z0-9]{20,}$'; then
+    warn "Key doesn't look like a bb_xxx key — MCP auth may fail"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 3: opencode.json — 6 MCPs + gateway + codemode
+# ═══════════════════════════════════════════════════════════════
+step "opencode.json config (6 MCPs + gateway + codemode)"
+
+mkdir -p "$OC_CONFIG"
+
+KEY_FOR_JSON="${BB_KEY:-bb_PASTE_YOUR_KEY_HERE}"
+
+cat > "$OC_CONFIG/opencode.json" << JSONEOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "model": "openrouter/z-ai/glm-5.1",
+  "small_model": "openrouter/z-ai/glm-4.7-flash",
+  "autoupdate": true,
+  "snapshot": true,
+  "provider": {
+    "openrouter": {
+      "options": {
+        "apiKey": "{env:BB_API_KEY}",
+        "baseURL": "https://gateway.bebond.net/v1"
+      }
+    },
+    "huggingface": {
+      "options": {
+        "apiKey": "{env:HF_TOKEN}",
+        "baseURL": "https://router.huggingface.co/v1"
+      }
+    }
+  },
+  "permission": {
+    "*": "allow",
+    "bash": "allow",
+    "write": "allow",
+    "read": "allow",
+    "edit": "allow",
+    "webfetch": "allow"
+  },
+  "mcp": {
+    "bbtracker": {
+      "type": "remote",
+      "url": "https://mcp.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer $KEY_FOR_JSON"
+      }
+    },
+    "aio": {
+      "type": "remote",
+      "url": "https://mcp.bebond.net/aio/mcp",
+      "enabled": true,
+      "headers": {
+        "X-API-Key": "$KEY_FOR_JSON"
+      }
+    },
+    "sk": {
+      "type": "remote",
+      "url": "https://sk-mcp.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer $KEY_FOR_JSON"
+      }
+    },
+    "bbdev": {
+      "type": "remote",
+      "url": "https://dev.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer $KEY_FOR_JSON"
+      }
+    },
+    "bbdocs": {
+      "type": "remote",
+      "url": "https://doc.bebond.net/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer $KEY_FOR_JSON"
+      }
+    },
+    "inkoop": {
+      "type": "remote",
+      "url": "https://inkoop.alex-rollin.workers.dev/mcp",
+      "enabled": true,
+      "headers": {
+        "Authorization": "Bearer $KEY_FOR_JSON"
+      }
+    }
+  }
+}
+JSONEOF
+ok "Wrote: $OC_CONFIG/opencode.json (6 MCPs, gateway routing, no nvidia — avoids rate limits)"
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 4: Shell env (BB_API_KEY + PATH)
+# ═══════════════════════════════════════════════════════════════
+step "Shell environment"
+
+ENV_BB="$HOME/.env.bb"
+printf 'export BB_API_KEY=%s\n' "$BB_KEY" > "$ENV_BB"
+chmod 600 "$ENV_BB"
+ok "Wrote: $ENV_BB"
+
+SHELL_RC="$HOME/.bashrc"
+if [ -f "$HOME/.zshrc" ]; then SHELL_RC="$HOME/.zshrc"; fi
+if [ "$OS" = "mac" ] && [ ! -f "$HOME/.zshrc" ] && [ ! -f "$HOME/.bashrc" ]; then
+  SHELL_RC="$HOME/.zshrc"
+  touch "$SHELL_RC"
+fi
+
+append_line() {
+  local file="$1" line="$2"
+  grep -qF "$line" "$file" 2>/dev/null || echo "$line" >> "$file"
+}
+
+append_line "$SHELL_RC" 'export PATH="$HOME/.opencode/bin:$HOME/.local/bin:$PATH"'
+append_line "$SHELL_RC" '[ -f "$HOME/.env.bb" ] && . "$HOME/.env.bb"'
+ok "Shell RC updated: $SHELL_RC"
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 5: AGENTS.md — minimal work rules
+# ═══════════════════════════════════════════════════════════════
+step "AGENTS.md work rules"
+
+mkdir -p "$OC_CONFIG"
+if [ ! -f "$OC_CONFIG/AGENTS.md" ]; then
+cat > "$OC_CONFIG/AGENTS.md" << 'AGENTSEOF'
+# OpenCode Work Rules
+
+## Karpathy Coding Rules
+1. Write simple, readable code. No clever abstractions.
+2. Debug with prints, not debuggers.
+3. One function, one job.
+4. Delete code aggressively.
+5. No magic numbers — name every constant.
+6. Copy-paste > wrong abstraction.
+7. Ship, then iterate.
+8. Test the happy path first.
+9. Read the error message.
+10. git commit early and often.
+
+## Bebond Rules
+1. No push to main — branch + PR + squash-merge
+2. Never answer from training data when a tool can answer
+3. Heartbeat (sk:beat_write) every 15 min while working
+4. Done = proof comment on BBT ticket
+5. One ticket at a time
+
+## MCP + Codemode
+Every Bebond MCP server has a Codemode pair (search_tools + execute).
+| Server | search_tools | execute |
+|---|---|---|
+| bbtracker | bbtracker_search_tools | bbtracker_execute |
+| aio | aio_search_tools | aio_execute |
+| bbdocs | bbdocs_search_tools | bbdocs_execute |
+| inkoop | inkoop_search_tools | inkoop_execute |
+AGENTSEOF
+ok "Wrote: $OC_CONFIG/AGENTS.md"
+else
+  ok "AGENTS.md already exists (kept)"
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 6: Verify
+# ═══════════════════════════════════════════════════════════════
+step "Verify MCP connections"
+
+if [ -n "$BB_KEY" ]; then
+  info "Testing MCP auth..."
+  PASS=0; FAIL=0
+  for mcp_url in "https://mcp.bebond.net/mcp" "https://mcp.bebond.net/aio/mcp" "https://sk-mcp.bebond.net/mcp" "https://doc.bebond.net/mcp"; do
+    host=$(echo "$mcp_url" | sed 's|https://||;s|/.*||')
+    resp=$(curl -sS --max-time 5 -X POST "$mcp_url" \
+      -H "Authorization: Bearer $BB_KEY" \
+      -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"bb-setup","version":"1.0.0"}}}' 2>/dev/null || echo "FAIL")
+    if echo "$resp" | grep -q "result"; then
+      ok "$host — connected"; PASS=$((PASS+1))
+    else
+      warn "$host — no response"; FAIL=$((FAIL+1))
+    fi
+  done
+  info "$PASS connected, $FAIL failed"
+else
+  warn "No BB key — skipping MCP verify"
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# DONE
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "═══════════════════════════════════════════════════════════════"
+echo -e " ${GREEN}bb-setup v${VERSION} complete!${NC}"
+echo "═══════════════════════════════════════════════════════════════"
+echo ""
+echo " Installed:"
+echo "   opencode   → $(command -v opencode 2>/dev/null || echo 'add to PATH')"
+echo "   config     → $OC_CONFIG/opencode.json"
+echo "   work rules → $OC_CONFIG/AGENTS.md"
+echo "   MCPs       → bbtracker · aio · sk · bbdev · bbdocs · inkoop"
+echo "   gateway    → gateway.bebond.net/v1 (GLM-5.1, no nvidia rate limits)"
+echo "   BB key     → $([ -n "$BB_KEY" ] && echo 'configured ✅' || echo 'NOT SET')"
+echo ""
+echo " Launch:"
+echo "   opencode              # interactive TUI"
+echo "   opencode -p project   # with project context"
+echo ""
+echo " Open a NEW terminal (or: source $SHELL_RC) for PATH to take effect."
+echo "═══════════════════════════════════════════════════════════════"
